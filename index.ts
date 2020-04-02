@@ -34,7 +34,7 @@ type JobStatus = {
     canceled: boolean
 };
 
-function fitTextProse(
+function fitText(
     ctx: CanvasRenderingContext2D, 
     text: string, 
     fontFamily: string,
@@ -187,7 +187,6 @@ async function main() {
     let dragStartX: number;
     let dragStartY: number;
     const fsEntryCache: Map<string, Promise<FSEntry>> = new Map();
-    const fsEntryCache2: Map<string, FSEntry> = new Map();
     const root = "./Playground";
 
     const canvas = document.createElement("canvas");
@@ -310,7 +309,6 @@ async function main() {
     }
 
     async function doRender(jobStatus: JobStatus) {
-        console.log("doRender", jobStatus.id);
         ctx.save();
         ctx.fillStyle = "while";
         ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -321,11 +319,6 @@ async function main() {
             width: CANVAS_WIDTH,
             height: CANVAS_HEIGHT
         }, 0, jobStatus);
-        if (jobStatus.canceled) {
-            console.log("doRender canceled", jobStatus.id);
-        } else {
-            console.log("doRender complete", jobStatus.id);
-        }
     }
 
     async function renderEntry(path: string, box: BoundingBox, level: number, jobStatus: JobStatus) {
@@ -344,14 +337,9 @@ async function main() {
         const scale = area / (CANVAS_WIDTH * CANVAS_HEIGHT);
         const name = path === "./" ? "./" : parts[parts.length - 1];
         if (scale <= 1.2) {
-            fitTextProse(ctx, name, "Monaco", "normal", myCanvasBox);
+            fitText(ctx, name, "Monaco", "normal", myCanvasBox);
         }
-        let info;
-        if (fsEntryCache2.has(path)) {
-            info = fsEntryCache2.get(path);
-        } else {
-            info = await getFSEntryInfo(path);
-        }
+        const info = await getFSEntryInfo(path);
         if (info.type === "directory") {
             if (scale >= 0.5) {
                 const entries = info.entries;
@@ -372,20 +360,17 @@ async function main() {
             }
         } else {
             if (scale > 1.2) {
-                fitTextProse(ctx, name, "Monaco", "normal", myCanvasBox);
+                fitText(ctx, name, "Monaco", "normal", myCanvasBox);
             }
             if (scale >= 0.5) {
-                fitTextProse(ctx, info.preview, "Monaco", "normal", myCanvasBox);
+                fitText(ctx, info.preview, "Monaco", "normal", myCanvasBox);
             }
         }
     }
 
     async function getFSEntryInfo(path: string): Promise<FSEntry> {
         if (fsEntryCache.has(path)) {
-            return fsEntryCache.get(path).then((info) => {
-                fsEntryCache2.set(path, info);
-                return info;
-            });
+            return fsEntryCache.get(path);
         } else {
             const promise: Promise<FSEntry> = (async (): Promise<FSEntry> => {
                 const request = await fetch(API_BASE_URL + "?path=" + path);

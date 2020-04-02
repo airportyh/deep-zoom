@@ -2,6 +2,7 @@ import * as express from "express";
 import * as fs from "fs";
 import * as path from "path";
 import * as cors from "cors";
+const { getPreview } = require("./get-first-bytes");
 
 const app = express();
 app.use(cors());
@@ -15,7 +16,7 @@ app.get("/fs", async (req, resp) => {
         resp.end("Please provide a 'path' parameter.");
         return;
     }
-    const aPath = path.join(".", requestPath);
+    const aPath = path.join("/Users/airportyh/Home", requestPath);
     const stat = await fs.promises.stat(aPath);
     const basename = path.basename(aPath);
     if (stat.isDirectory()) {
@@ -26,9 +27,11 @@ app.get("/fs", async (req, resp) => {
             entries
         });
     } else if (stat.isFile()) {
+        const preview = await getPreview(aPath, 500);
         resp.json({
             type: "file",
-            name: basename
+            name: basename,
+            preview: preview
         });
     } else {
         resp.status(500);
