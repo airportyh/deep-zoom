@@ -1,3 +1,4 @@
+import { sleep } from "simple-sleep";
 const API_BASE_URL = "http://localhost:3000/fs";
 const CANVAS_WIDTH = 1000;
 const CANVAS_HEIGHT = 1000;
@@ -14,7 +15,26 @@ type FitTextResult = {
     lines: string[][]
 }
 
-function fitText(
+type FSEntry = FSEntryDirectory | FSEntryFile;
+
+type FSEntryDirectory = {
+    type: "directory",
+    name: string,
+    entries: string[]
+};
+
+type FSEntryFile = {
+    type: "file",
+    name: string,
+    preview: string
+};
+
+type JobStatus = {
+    id: number,
+    canceled: boolean
+};
+
+function fitTextProse(
     ctx: CanvasRenderingContext2D, 
     text: string, 
     fontFamily: string,
@@ -114,11 +134,18 @@ function calculateTextLayout(
     let line: string[] = [];
     let allFit = true;
     for (let textLine of textLines) {
-        const words = textLine.split(/\s+/);
+        const words = textLine.split(/\s+/).filter((word) => !!word);
+        
         for (let word of words) {
-            if (line.length === 0 && ctx.measureText(word).width < box.width) {
-                line.push(word);
-            } else if ((ctx.measureText([...line, word].join(" ")).width + minSpaceWidth) < box.width) {
+
+            if (line.length === 0) {
+                if (ctx.measureText(word).width < box.width) {
+                    line.push(word);
+                } else {
+                    allFit = false;
+                    break;
+                }
+            } else if ((ctx.measureText([...line, word].join("")).width + line.length * minSpaceWidth) < box.width) {
                 line.push(word);
             } else {
                 if ((lines.length + 1) * lineHeight * fontSize < box.height) {
@@ -131,14 +158,13 @@ function calculateTextLayout(
             }
         }
         if ((lines.length + 1) * lineHeight * fontSize < box.height &&
-            ctx.measureText(line.join(" ")).width + minSpaceWidth < box.width
+            ctx.measureText(line.join("")).width + (line.length - 1) * minSpaceWidth < box.width
             ) {
             lines.push(line);
             line = [];
         } else {
             allFit = false;
             break;
-
         }
     }
 
@@ -148,18 +174,21 @@ function calculateTextLayout(
     };
 }
 
-
 async function main() {
+    let currentJob: JobStatus;
+    let currentJobComplete: Promise<void>;
+    let nextJobId: number = 1;
     let viewport = {
-        top: 0,
-        left: 0,
-        zoom: 1
+        top: -200,
+        left: -200,
+        zoom: 0.7
     };
     let dragging = false;
     let dragStartX: number;
     let dragStartY: number;
-    const request = await fetch(API_BASE_URL + "?path=.git");
-    const rootInfo = await request.json();
+    const fsEntryCache: Map<string, Promise<FSEntry>> = new Map();
+    const fsEntryCache2: Map<string, FSEntry> = new Map();
+    const root = "./Playground";
 
     const canvas = document.createElement("canvas");
     canvas.width = CANVAS_WIDTH;
@@ -173,6 +202,26 @@ async function main() {
     ctx.textBaseline = "bottom";
 
     render();
+
+    function pushJob(job: (status: JobStatus) => Promise<void>) {
+        if (!currentJob) {
+            currentJob = {
+                id: nextJobId,
+                canceled: false
+            };
+            nextJobId++;
+            currentJobComplete = job(currentJob);
+            currentJobComplete.then(() => {
+                currentJob = null;
+            })
+        } else {
+            const myCurrentJob = currentJob;
+            myCurrentJob.canceled = true;
+            currentJobComplete.then(() => {
+                pushJob(job);
+            });
+        }
+    }
 
     window.addEventListener("mousedown", (e: MouseEvent) => {
         dragging = true;
@@ -200,7 +249,7 @@ async function main() {
         e.preventDefault();
         const delta = e.deltaY;
         const [pointerX, pointerY] = pointScreenToCanvas(e);
-        const newZoom = Math.max(0.5, viewport.zoom - delta * 0.01);
+        const newZoom = Math.max(0.5, viewport.zoom * (1 - delta * 0.01));
 
         const [worldPointerX, worldPointerY] = pointCanvasToWorld(pointerX, pointerY);
         const newLeft = - (pointerX / newZoom - worldPointerX);
@@ -231,21 +280,21 @@ async function main() {
         ];
     }
 
-    function pointWorldToCanvas(x: number, y: number): [number, number] {
-        return [
-            (x - viewport.top) * viewport.zoom,
-            (y - viewport.left) * viewport.zoom
-        ];
-    }
+    // function pointWorldToCanvas(x: number, y: number): [number, number] {
+    //     return [
+    //         (x - viewport.top) * viewport.zoom,
+    //         (y - viewport.left) * viewport.zoom
+    //     ];
+    // }
 
-    function boxCanvasToWorld(box: BoundingBox): BoundingBox {
-        return {
-            top: box.top / viewport.zoom + viewport.top,
-            left: box.left / viewport.zoom + viewport.left,
-            width: box.width / viewport.zoom,
-            height: box.height / viewport.zoom
-        };
-    }
+    // function boxCanvasToWorld(box: BoundingBox): BoundingBox {
+    //     return {
+    //         top: box.top / viewport.zoom + viewport.top,
+    //         left: box.left / viewport.zoom + viewport.left,
+    //         width: box.width / viewport.zoom,
+    //         height: box.height / viewport.zoom
+    //     };
+    // }
 
     function boxWorldToCanvas(box: BoundingBox): BoundingBox {
         return {
@@ -257,39 +306,100 @@ async function main() {
     }
 
     function render() {
+        pushJob(doRender);
+    }
+
+    async function doRender(jobStatus: JobStatus) {
+        console.log("doRender", jobStatus.id);
         ctx.save();
         ctx.fillStyle = "while";
         ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         ctx.restore();
-        fitText(ctx, ".git", "Monaco", "normal", boxWorldToCanvas({
-            top: 0, left: 0, width: CANVAS_WIDTH, height: CANVAS_HEIGHT
-        }));
-        const entries = rootInfo.entries;
-        const perRow = Math.ceil(Math.sqrt(entries.length));
-        const columnWidth = CANVAS_WIDTH / perRow;
-        const rowHeight = CANVAS_HEIGHT / perRow;
-        for (let i = 0; i < entries.length; i++) {
-            const entry = entries[i];
-            const rowIndex = Math.floor(i / perRow);
-            const columnIndex = i % perRow;
-            fitText(ctx, entry, "Monaco", "normal", boxWorldToCanvas({
-                top: rowIndex * rowHeight,
-                left: columnIndex * columnWidth,
-                width: columnWidth,
-                height: rowHeight
-            }));
+        await renderEntry(root, {
+            top: 0,
+            left: 0,
+            width: CANVAS_WIDTH,
+            height: CANVAS_HEIGHT
+        }, 0, jobStatus);
+        if (jobStatus.canceled) {
+            console.log("doRender canceled", jobStatus.id);
+        } else {
+            console.log("doRender complete", jobStatus.id);
         }
-        // if (pointerX && pointerY) {
-        //     ctx.save();
-        //     ctx.fillStyle = "orange";
-        //     ctx.fillRect(
-        //         pointerX - 4, 
-        //         pointerY - 4, 
-        //         9, 
-        //         9);
-        //     ctx.restore();
-        // }
     }
+
+    async function renderEntry(path: string, box: BoundingBox, level: number, jobStatus: JobStatus) {
+        if (jobStatus.canceled) {
+            return;
+        }
+        // check if job status is cancel, return
+        const parts = path.split("/");
+        const myCanvasBox = boxWorldToCanvas(box);
+        const visibleWidth = Math.min(CANVAS_WIDTH, myCanvasBox.left + myCanvasBox.width) - Math.max(0, myCanvasBox.left);
+        const visibleHeight = Math.min(CANVAS_HEIGHT, myCanvasBox.top + myCanvasBox.height) - Math.max(0, myCanvasBox.top);
+        if (visibleWidth < 0 || visibleHeight < 0) {
+            return;
+        }
+        const area = myCanvasBox.width * myCanvasBox.height;
+        const scale = area / (CANVAS_WIDTH * CANVAS_HEIGHT);
+        const name = path === "./" ? "./" : parts[parts.length - 1];
+        if (scale <= 1.2) {
+            fitTextProse(ctx, name, "Monaco", "normal", myCanvasBox);
+        }
+        let info;
+        if (fsEntryCache2.has(path)) {
+            info = fsEntryCache2.get(path);
+        } else {
+            info = await getFSEntryInfo(path);
+        }
+        if (info.type === "directory") {
+            if (scale >= 0.5) {
+                const entries = info.entries;
+                const perRow = Math.ceil(Math.sqrt(entries.length));
+                const columnWidth = box.width / perRow;
+                const rowHeight = box.height / perRow;
+                for (let i = 0; i < entries.length; i++) {
+                    const entry = entries[i];
+                    const rowIndex = Math.floor(i / perRow);
+                    const columnIndex = i % perRow;
+                    await renderEntry(path + "/" + entry, {
+                        top: box.top + rowIndex * rowHeight,
+                        left: box.left + columnIndex * columnWidth,
+                        width: columnWidth,
+                        height: rowHeight
+                    }, level + 1, jobStatus);
+                }
+            }
+        } else {
+            if (scale > 1.2) {
+                fitTextProse(ctx, name, "Monaco", "normal", myCanvasBox);
+            }
+            if (scale >= 0.5) {
+                fitTextProse(ctx, info.preview, "Monaco", "normal", myCanvasBox);
+            }
+        }
+    }
+
+    async function getFSEntryInfo(path: string): Promise<FSEntry> {
+        if (fsEntryCache.has(path)) {
+            return fsEntryCache.get(path).then((info) => {
+                fsEntryCache2.set(path, info);
+                return info;
+            });
+        } else {
+            const promise: Promise<FSEntry> = (async (): Promise<FSEntry> => {
+                const request = await fetch(API_BASE_URL + "?path=" + path);
+                return request.json();
+            })();
+            
+            fsEntryCache.set(path, promise);
+            return promise;
+        }
+    }
+
+
+
+    
 }
 
 main().catch((err) => console.log(err.stack));
