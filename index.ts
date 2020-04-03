@@ -1,5 +1,5 @@
 import { sleep } from "simple-sleep";
-const API_BASE_URL = "http://localhost:3000/fs";
+const API_BASE_URL = "http://localhost:3000/";
 const CANVAS_WIDTH = 1000;
 const CANVAS_HEIGHT = 1000;
 
@@ -10,10 +10,13 @@ type BoundingBox = {
     height: number;
 };
 
-type FitTextResult = {
-    allFit: boolean,
-    lines: string[][]
-}
+type FontSetting = {
+    size: number,
+    family: string,
+    weight: string
+};
+
+type FSEntryStatus = "pending" | FSEntry;
 
 type FSEntry = FSEntryDirectory | FSEntryFile;
 
@@ -26,13 +29,36 @@ type FSEntryDirectory = {
 type FSEntryFile = {
     type: "file",
     name: string,
-    preview: string
+    preview?: string
 };
 
-type JobStatus = {
-    id: number,
-    canceled: boolean
-};
+type DirectoryListingStatus = "pending" | string[];
+
+type PreviewStatus = "pending" | { preview: string };
+
+class TextMeasurer {
+    widthTable: { [key: string]: number } = {};
+    ctx: CanvasRenderingContext2D;
+    constructor(ctx: CanvasRenderingContext2D) {
+        this.ctx = ctx;
+    }
+
+    measureText(text: string, fontSetting: FontSetting): number {
+        const fontString = `${fontSetting.weight} ${fontSetting.size}px ${fontSetting.family}`;
+        let totalWidth = 0;
+        for (let chr of text) {
+            const chrKey = chr + fontString;
+            let width = this.widthTable[chrKey];
+            if (!width) {
+                this.ctx.font = fontString;
+                width = this.ctx.measureText(chr).width;
+                this.widthTable[chrKey] = width;
+            }
+            totalWidth += width;
+        }
+        return totalWidth;
+    }
+}
 
 function fitText(
     ctx: CanvasRenderingContext2D, 
@@ -40,18 +66,34 @@ function fitText(
     fontFamily: string,
     fontWeight: string = "normal",
     box: BoundingBox,
+    textMeasurer: TextMeasurer,
     lineHeight: number = 1.2
 ) {
     let lowerFontSize: null | number = null;
     let upperFontSize: null | number = null;
     let fontSize = 5;
-    let lines;
+    let lines = text.split("\n");
+    let height, width;
     ctx.strokeRect(box.left, box.top, box.width, box.height);
+    // console.log("fitText", text);
     while (true) {
-        const result = calculateTextLayout(ctx, fontSize, text, 
-            fontFamily, fontWeight, box, lineHeight);
-        lines = result.lines;
-        if (result.allFit) {
+        height = lines.length * fontSize * lineHeight;
+        width = lines.reduce((widest, line) => {
+            const lineWidth = textMeasurer.measureText(line, {
+                size: fontSize,
+                weight: fontWeight,
+                family: fontFamily
+            });
+            if (widest > lineWidth) {
+                return widest;
+            } else {
+                return lineWidth;
+            }
+        }, 0);
+        // console.log("try font size", fontSize, "height", height, "width", width);
+        
+        const allFit = height <= box.height && width <= box.width;
+        if (allFit) {
             lowerFontSize = fontSize;
             if (upperFontSize) {
                 const newFontSize = Math.floor((upperFontSize + fontSize) / 2);
@@ -75,109 +117,21 @@ function fitText(
             }
         }
     }
-    drawTextLines(ctx, fontFamily, fontWeight, fontSize, lines, lineHeight, box);
-}
-
-function drawTextLines(
-    ctx: CanvasRenderingContext2D, 
-    fontFamily: string,
-    fontWeight: string,
-    fontSize: number, 
-    lines: string[][], 
-    lineHeight: number,
-    box: BoundingBox) {
+    // console.log("result font size", fontSize);
     ctx.fillStyle = "black";
-    
-    const topOffset = (box.height - lines.length * fontSize * lineHeight) / 2;
-    const longestLineWidth = lines.reduce((longestWidth, line) => {
-        const width = ctx.measureText(line.join(" ")).width;
-        if (longestWidth < width) {
-            return width;
-        } else {
-            return longestWidth;
-        }
-    }, 0);
-    const leftOffset = (box.width - longestLineWidth) / 2;
-    const maxSpaceWidth = ctx.measureText("O").width * 2;
-    lines.forEach((line, lineIdx) => {
-        const onlyTextWidth = ctx.measureText(line.join("")).width;
-        const availableWhiteSpace = box.width - onlyTextWidth;
-        const spaceWidth = Math.min(
-            availableWhiteSpace / (line.length - 1), maxSpaceWidth);
-        let runningLineWidth = 0;
-        line.forEach((word, wordIdx) => {
-            ctx.fillText(word, 
-                leftOffset + box.left + runningLineWidth, 
-                topOffset + box.top + (lineIdx + 1) * 
-                    (lineHeight * fontSize)
-            );
-            runningLineWidth += ctx.measureText(word).width + 
-                spaceWidth;
-        });
-    });
-}
-
-function calculateTextLayout(
-    ctx: CanvasRenderingContext2D, 
-    fontSize: number, 
-    text: string, 
-    fontFamily: string,
-    fontWeight: string = "normal",
-    box: BoundingBox,
-    lineHeight: number = 1.2
-    ): FitTextResult {
-
     ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}`;
-    const minSpaceWidth = ctx.measureText("i").width;
-    const textLines = text.split("\n");
-    const lines: string[][] = [];
-    let line: string[] = [];
-    let allFit = true;
-    for (let textLine of textLines) {
-        const words = textLine.split(/\s+/).filter((word) => !!word);
-        
-        for (let word of words) {
-
-            if (line.length === 0) {
-                if (ctx.measureText(word).width < box.width) {
-                    line.push(word);
-                } else {
-                    allFit = false;
-                    break;
-                }
-            } else if ((ctx.measureText([...line, word].join("")).width + line.length * minSpaceWidth) < box.width) {
-                line.push(word);
-            } else {
-                if ((lines.length + 1) * lineHeight * fontSize < box.height) {
-                    lines.push(line);
-                    line = [word];
-                } else {
-                    allFit = false;
-                    break;
-                }
-            }
-        }
-        if ((lines.length + 1) * lineHeight * fontSize < box.height &&
-            ctx.measureText(line.join("")).width + (line.length - 1) * minSpaceWidth < box.width
-            ) {
-            lines.push(line);
-            line = [];
-        } else {
-            allFit = false;
-            break;
-        }
+    const topOffset = (box.height - lines.length * fontSize * lineHeight) / 2;
+    const leftOffset = (box.width - width) / 2;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        ctx.fillText(line, 
+            leftOffset + box.left, 
+            topOffset + box.top + (i + 1) * (lineHeight * fontSize)
+        );
     }
-
-    return {
-        allFit,
-        lines
-    };
 }
 
 async function main() {
-    let currentJob: JobStatus;
-    let currentJobComplete: Promise<void>;
-    let nextJobId: number = 1;
     let viewport = {
         top: -200,
         left: -200,
@@ -186,7 +140,9 @@ async function main() {
     let dragging = false;
     let dragStartX: number;
     let dragStartY: number;
-    const fsEntryCache: Map<string, Promise<FSEntry>> = new Map();
+    const fsEntryCache: Map<string, FSEntryStatus> = new Map();
+    const dirListingCache: Map<string, DirectoryListingStatus> = new Map();
+    const previewCache: Map<string, PreviewStatus> = new Map();
     const root = "./Playground";
 
     const canvas = document.createElement("canvas");
@@ -198,29 +154,14 @@ async function main() {
     document.body.appendChild(canvas);
 
     const ctx = canvas.getContext("2d");
+    const textMeasurer = new TextMeasurer(ctx);
     ctx.textBaseline = "bottom";
 
-    render();
-
-    function pushJob(job: (status: JobStatus) => Promise<void>) {
-        if (!currentJob) {
-            currentJob = {
-                id: nextJobId,
-                canceled: false
-            };
-            nextJobId++;
-            currentJobComplete = job(currentJob);
-            currentJobComplete.then(() => {
-                currentJob = null;
-            })
-        } else {
-            const myCurrentJob = currentJob;
-            myCurrentJob.canceled = true;
-            currentJobComplete.then(() => {
-                pushJob(job);
-            });
-        }
+    const selfRender = () => {
+        render();
+        requestAnimationFrame(selfRender);
     }
+    requestAnimationFrame(selfRender);
 
     window.addEventListener("mousedown", (e: MouseEvent) => {
         dragging = true;
@@ -240,7 +181,7 @@ async function main() {
             viewport.top -= worldPointerY - worldDragStartY;
             dragStartX = pointerX;
             dragStartY = pointerY;
-            requestAnimationFrame(render);
+            // requestAnimationFrame(render);
         }
     });
 
@@ -262,7 +203,7 @@ async function main() {
         
         // console.log("x=", pointerX, "y=", pointerY, "zoomLevel=", zoomLevel);
         
-        this.requestAnimationFrame(render);
+        // this.requestAnimationFrame(render);
       }, { passive: false });
 
     function pointScreenToCanvas(e: MouseEvent): [number, number] {
@@ -279,22 +220,6 @@ async function main() {
         ];
     }
 
-    // function pointWorldToCanvas(x: number, y: number): [number, number] {
-    //     return [
-    //         (x - viewport.top) * viewport.zoom,
-    //         (y - viewport.left) * viewport.zoom
-    //     ];
-    // }
-
-    // function boxCanvasToWorld(box: BoundingBox): BoundingBox {
-    //     return {
-    //         top: box.top / viewport.zoom + viewport.top,
-    //         left: box.left / viewport.zoom + viewport.left,
-    //         width: box.width / viewport.zoom,
-    //         height: box.height / viewport.zoom
-    //     };
-    // }
-
     function boxWorldToCanvas(box: BoundingBox): BoundingBox {
         return {
             top: (box.top - viewport.top) * viewport.zoom,
@@ -305,28 +230,21 @@ async function main() {
     }
 
     function render() {
-        pushJob(doRender);
-    }
-
-    async function doRender(jobStatus: JobStatus) {
         ctx.save();
         ctx.fillStyle = "while";
         ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
         ctx.restore();
-        await renderEntry(root, {
+        fetchFsEntry(root);
+        renderEntry(root, {
             top: 0,
             left: 0,
             width: CANVAS_WIDTH,
             height: CANVAS_HEIGHT
-        }, 0, jobStatus);
+        }, 0);
     }
 
-    async function renderEntry(path: string, box: BoundingBox, level: number, jobStatus: JobStatus) {
-        if (jobStatus.canceled) {
-            return;
-        }
+    function renderEntry(path: string, box: BoundingBox, level: number) {
         // check if job status is cancel, return
-        const parts = path.split("/");
         const myCanvasBox = boxWorldToCanvas(box);
         const visibleWidth = Math.min(CANVAS_WIDTH, myCanvasBox.left + myCanvasBox.width) - Math.max(0, myCanvasBox.left);
         const visibleHeight = Math.min(CANVAS_HEIGHT, myCanvasBox.top + myCanvasBox.height) - Math.max(0, myCanvasBox.top);
@@ -335,14 +253,22 @@ async function main() {
         }
         const area = myCanvasBox.width * myCanvasBox.height;
         const scale = area / (CANVAS_WIDTH * CANVAS_HEIGHT);
-        const name = path === "./" ? "./" : parts[parts.length - 1];
+        const parts = path.split("/");
+        const name = parts[parts.length - 1];
         if (scale <= 1.2) {
-            fitText(ctx, name, "Monaco", "normal", myCanvasBox);
+            fitText(ctx, name, "Monaco", "normal", myCanvasBox, textMeasurer);
         }
-        const info = await getFSEntryInfo(path);
+        const info = getFSEntry(path);
+        if (!info) {
+            return;
+        }
         if (info.type === "directory") {
             if (scale >= 0.5) {
-                const entries = info.entries;
+                fetchDirectoryListing(path);
+                const entries = getDirectoryListing(path);
+                if (!entries) {
+                    return;
+                }
                 const perRow = Math.ceil(Math.sqrt(entries.length));
                 const columnWidth = box.width / perRow;
                 const rowHeight = box.height / perRow;
@@ -350,41 +276,101 @@ async function main() {
                     const entry = entries[i];
                     const rowIndex = Math.floor(i / perRow);
                     const columnIndex = i % perRow;
-                    await renderEntry(path + "/" + entry, {
+                    renderEntry(path + "/" + entry, {
                         top: box.top + rowIndex * rowHeight,
                         left: box.left + columnIndex * columnWidth,
                         width: columnWidth,
                         height: rowHeight
-                    }, level + 1, jobStatus);
+                    }, level + 1);
                 }
             }
         } else {
             if (scale > 1.2) {
-                fitText(ctx, name, "Monaco", "normal", myCanvasBox);
+                fitText(ctx, name, "Monaco", "normal", myCanvasBox, textMeasurer);
             }
             if (scale >= 0.5) {
-                fitText(ctx, info.preview, "Monaco", "normal", myCanvasBox);
+                fetchPreview(path);
+                const preview = getPreview(path);
+                if (preview) {
+                    fitText(ctx, preview, "Monaco", "normal", myCanvasBox, textMeasurer);
+                }
             }
         }
     }
 
-    async function getFSEntryInfo(path: string): Promise<FSEntry> {
-        if (fsEntryCache.has(path)) {
-            return fsEntryCache.get(path);
+    function getFSEntry(path: string): FSEntry | null {
+        const status = fsEntryCache.get(path);
+        if (status === "pending") {
+            return null;
         } else {
-            const promise: Promise<FSEntry> = (async (): Promise<FSEntry> => {
-                const request = await fetch(API_BASE_URL + "?path=" + path);
-                return request.json();
-            })();
-            
-            fsEntryCache.set(path, promise);
-            return promise;
+            return status;
         }
     }
 
+    function fetchFsEntry(path: string): void {
+        if (fsEntryCache.has(path)) {
+            return;
+        }
+        fsEntryCache.set(path, "pending");
+        setTimeout(() => {
+            fetch(API_BASE_URL + "entry?path=" + path)
+            .then((request) => request.json())
+            .then((result) => {
+                fsEntryCache.set(path, result);
+            });
+        });
+    }
 
+    function getDirectoryListing(path: string): string[] | null {
+        const status = dirListingCache.get(path);
+        if (status === "pending") {
+            return null;
+        } else {
+            return status;
+        }
+    }
 
-    
+    function fetchDirectoryListing(path: string): void {
+        if (dirListingCache.has(path)) {
+            return;
+        }
+        dirListingCache.set(path, "pending");
+        setTimeout(() => {
+            fetch(API_BASE_URL + "listdir?path=" + path)
+            .then((request) => request.json())
+            .then((entries) => {
+                const entryNames = entries.map(entry => entry.entry);
+                dirListingCache.set(path, entryNames);
+                for (let entry of entries) {
+                    const entryPath = path + "/" + entry.entry;
+                    fsEntryCache.set(entryPath, entry)
+                }
+            });
+        });
+    }
+
+    function getPreview(path: string): string | null {
+        const status = previewCache.get(path);
+        if (status === "pending") {
+            return null;
+        } else {
+            return status && status.preview;
+        }
+    }
+
+    function fetchPreview(path: string): void {
+        if (previewCache.has(path)) {
+            return;
+        }
+        previewCache.set(path, "pending");
+        setTimeout(() => {
+            fetch(API_BASE_URL + "preview?path=" + path)
+            .then((request) => request.json())
+            .then((preview) => {
+                previewCache.set(path, preview);
+            });
+        });
+    }
 }
 
 main().catch((err) => console.log(err.stack));
