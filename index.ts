@@ -1,7 +1,5 @@
 import { sleep } from "simple-sleep";
 const API_BASE_URL = "http://localhost:3000/";
-const CANVAS_WIDTH = 1000;
-const CANVAS_HEIGHT = 1000;
 
 type BoundingBox = {
     top: number;
@@ -132,11 +130,8 @@ function fitText(
 }
 
 async function main() {
-    let viewport = {
-        top: -200,
-        left: -200,
-        zoom: 0.7
-    };
+    document.body.style.margin = "0px";
+    document.body.style.padding = "0px";
     let dragging = false;
     let dragStartX: number;
     let dragStartY: number;
@@ -146,22 +141,22 @@ async function main() {
     const root = "./Playground";
 
     const canvas = document.createElement("canvas");
-    canvas.width = CANVAS_WIDTH;
-    canvas.height = CANVAS_HEIGHT;
-    canvas.style.transform = `scale(0.5) translate(-${CANVAS_WIDTH / 2}px, -${CANVAS_HEIGHT / 2}px)`;
-    canvas.style.border = "1px solid black";
-
+    canvas.width = window.innerWidth * 2;
+    canvas.height = window.innerHeight * 2;
+    let viewport = {
+        top: - canvas.height / 2,
+        left: - canvas.width / 2,
+        zoom: 0.5
+    };
+    canvas.style.transform = `scale(0.5) translate(-${canvas.width / 2}px, -${canvas.height / 2}px)`;
+    
     document.body.appendChild(canvas);
 
     const ctx = canvas.getContext("2d");
     const textMeasurer = new TextMeasurer(ctx);
     ctx.textBaseline = "bottom";
 
-    const selfRender = () => {
-        render();
-        requestAnimationFrame(selfRender);
-    }
-    requestAnimationFrame(selfRender);
+    requestRender();
 
     window.addEventListener("mousedown", (e: MouseEvent) => {
         dragging = true;
@@ -181,7 +176,7 @@ async function main() {
             viewport.top -= worldPointerY - worldDragStartY;
             dragStartX = pointerX;
             dragStartY = pointerY;
-            // requestAnimationFrame(render);
+            requestRender();
         }
     });
 
@@ -201,9 +196,7 @@ async function main() {
         };
         viewport = newViewport;
         
-        // console.log("x=", pointerX, "y=", pointerY, "zoomLevel=", zoomLevel);
-        
-        // this.requestAnimationFrame(render);
+        requestRender();
       }, { passive: false });
 
     function pointScreenToCanvas(e: MouseEvent): [number, number] {
@@ -229,33 +222,37 @@ async function main() {
         };
     }
 
+    function requestRender() {
+        requestAnimationFrame(render);
+    }
+
     function render() {
         ctx.save();
         ctx.fillStyle = "while";
-        ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.restore();
         fetchFsEntry(root);
         renderEntry(root, {
             top: 0,
             left: 0,
-            width: CANVAS_WIDTH,
-            height: CANVAS_HEIGHT
+            width: canvas.width,
+            height: canvas.height
         }, 0);
     }
 
     function renderEntry(path: string, box: BoundingBox, level: number) {
         // check if job status is cancel, return
         const myCanvasBox = boxWorldToCanvas(box);
-        const visibleWidth = Math.min(CANVAS_WIDTH, myCanvasBox.left + myCanvasBox.width) - Math.max(0, myCanvasBox.left);
-        const visibleHeight = Math.min(CANVAS_HEIGHT, myCanvasBox.top + myCanvasBox.height) - Math.max(0, myCanvasBox.top);
+        const visibleWidth = Math.min(canvas.width, myCanvasBox.left + myCanvasBox.width) - Math.max(0, myCanvasBox.left);
+        const visibleHeight = Math.min(canvas.height, myCanvasBox.top + myCanvasBox.height) - Math.max(0, myCanvasBox.top);
         if (visibleWidth < 0 || visibleHeight < 0) {
             return;
         }
         const area = myCanvasBox.width * myCanvasBox.height;
-        const scale = area / (CANVAS_WIDTH * CANVAS_HEIGHT);
+        const scale = area / (canvas.width * canvas.height);
         const parts = path.split("/");
         const name = parts[parts.length - 1];
-        if (scale <= 1.2) {
+        if (scale <= 1.1) {
             fitText(ctx, name, "Monaco", "normal", myCanvasBox, textMeasurer);
         }
         const info = getFSEntry(path);
@@ -285,10 +282,7 @@ async function main() {
                 }
             }
         } else {
-            if (scale > 1.2) {
-                fitText(ctx, name, "Monaco", "normal", myCanvasBox, textMeasurer);
-            }
-            if (scale >= 0.5) {
+            if (scale >= 0.6) {
                 fetchPreview(path);
                 const preview = getPreview(path);
                 if (preview) {
@@ -317,6 +311,7 @@ async function main() {
             .then((request) => request.json())
             .then((result) => {
                 fsEntryCache.set(path, result);
+                requestRender();
             });
         });
     }
@@ -345,6 +340,7 @@ async function main() {
                     const entryPath = path + "/" + entry.entry;
                     fsEntryCache.set(entryPath, entry)
                 }
+                requestRender();
             });
         });
     }
@@ -368,6 +364,7 @@ async function main() {
             .then((request) => request.json())
             .then((preview) => {
                 previewCache.set(path, preview);
+                requestRender();
             });
         });
     }
